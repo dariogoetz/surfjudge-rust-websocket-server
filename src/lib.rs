@@ -99,7 +99,6 @@ pub struct WebSocketServer {
 }
 
 async fn receive_websocket_messages(mut websocket: WebSocketListener) {
-    //let mut websocket = websocket;
     while let Some(msg) = websocket.listener.next().await {
         let msg = msg.expect("Failed to get request.");
         if msg.is_binary() || msg.is_text() {
