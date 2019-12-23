@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    // io::Error,
+    io::Error,
     thread,
     fmt,
 };
@@ -27,7 +27,6 @@ use tungstenite::protocol::Message as WSMessage;
 use async_tungstenite::WebSocketStream;
 
 use zmq;
-use tokio_zmq::{prelude::*, Socket, Pub, Sub, Error};
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Debug, Hash, Copy)]
 struct ClientID(usize);
@@ -181,11 +180,11 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<ServerMe
 
     loop {
         let msg = match sub.recv_msg(0) {
-                    Ok(x) => x,
-                    Err(_err) => {
-                        warn!("Error while reading zmq message.");
-                        continue;
-                    },
+            Ok(x) => x,
+            Err(_err) => {
+                warn!("Error while reading zmq message.");
+                continue;
+            },
         };
         let msg = match std::str::from_utf8(&msg) {
             Ok(x) => x,
