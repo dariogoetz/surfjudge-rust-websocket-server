@@ -1,8 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     io::Error,
     thread,
-    fmt,
 };
 
 use log::*;
@@ -10,20 +10,20 @@ use log::*;
 use futures::{
     channel::mpsc,
     stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt
+    SinkExt, StreamExt,
 };
 
 use async_std::{
-    net::{SocketAddr, ToSocketAddrs, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     task,
 };
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use async_tungstenite::WebSocketStream;
 use tungstenite;
 use tungstenite::protocol::Message;
-use async_tungstenite::WebSocketStream;
 
 use zmq;
 
@@ -42,14 +42,10 @@ struct NewConnection {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct ActionMessage{
+struct ActionMessage {
     action: String,
     channel: String,
 }
-
-
-#[derive(Debug)]
-struct OutMessage(String);
 
 #[derive(Debug)]
 struct WSMessage {
@@ -70,18 +66,6 @@ enum Event {
     FromZMQ(ZMQMessage),
 }
 
-#[derive(Debug)]
-struct Channel {
-    name: String,
-    clients: HashSet<ClientID>,
-}
-
-impl Channel {
-    fn add(&mut self, client: ClientID) {
-        self.clients.insert(client);
-    }
-}
-
 struct WebSocketListener {
     id: ClientID,
     addr: SocketAddr,
@@ -92,30 +76,36 @@ struct WebSocketListener {
 pub struct WebSocketServer {
     websocket_addr: String,
     zmq_addr: String,
-    senders:
-        HashMap<ClientID, SplitSink<WebSocketStream<TcpStream>, Message>>,
-    channels: HashMap<String, Channel>,
+    senders: HashMap<ClientID, SplitSink<WebSocketStream<TcpStream>, Message>>,
+    channels: HashMap<String, HashSet<ClientID>>,
 }
 
 async fn receive_websocket_messages(mut websocket: WebSocketListener) {
     while let Some(msg) = websocket.listener.next().await {
         let msg = msg.expect("Failed to get request.");
         if msg.is_binary() || msg.is_text() {
-            info!("Received websocket message from {}: {}", websocket.addr, msg);
+            info!(
+                "Received websocket message from {}: {}",
+                websocket.addr, msg
+            );
             websocket
                 .sender
                 .send(Event::FromWebSocket(WSMessage {
                     id: websocket.id,
                     message: msg.to_string(),
-                })).await
-                .unwrap_or_else(|_error|  {
+                }))
+                .await
+                .unwrap_or_else(|_error| {
                     warn!("Could not forward websocket message '{}' to server.", msg);
                 });
         } else if msg.is_close() {
-            websocket.sender.send(Event::CloseConnection(WSMessage {
-                id: websocket.id,
-                message: "close".to_string(),
-            })).await
+            websocket
+                .sender
+                .send(Event::CloseConnection(WSMessage {
+                    id: websocket.id,
+                    message: "close".to_string(),
+                }))
+                .await
                 .unwrap_or_else(|_error| {
                     warn!("Could not forward websocket closing message to server.");
                 });
@@ -123,10 +113,7 @@ async fn receive_websocket_messages(mut websocket: WebSocketListener) {
     }
 }
 
-async fn receive_websocket_connections(
-    addr: String,
-    mut sender: mpsc::UnboundedSender<Event>,
-) {
+async fn receive_websocket_connections(addr: String, mut sender: mpsc::UnboundedSender<Event>) {
     let mut idx = 0;
     let addr = addr
         .to_socket_addrs()
@@ -150,11 +137,13 @@ async fn receive_websocket_connections(
         let (sink, stream) = ws_stream.split();
         let client_id = ClientID(idx);
 
-        sender.send(Event::NewConnection(NewConnection {
-            id: client_id,
-            sender: sink,
-        })).await
-            .unwrap_or_else(|_error|  {
+        sender
+            .send(Event::NewConnection(NewConnection {
+                id: client_id,
+                sender: sink,
+            }))
+            .await
+            .unwrap_or_else(|_error| {
                 warn!("Could not register new websocket connection with server.");
             });
 
@@ -173,8 +162,7 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<Event>) 
     let context = zmq::Context::new();
     let sub = context.socket(zmq::SUB).unwrap();
     sub.set_subscribe(b"").unwrap();
-    sub.bind(&addr)
-        .expect("Could not connect to publisher.");
+    sub.bind(&addr).expect("Could not connect to publisher.");
 
     loop {
         let msg = match sub.recv_msg(0) {
@@ -182,14 +170,14 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<Event>) 
             Err(_err) => {
                 warn!("Error while reading zmq message.");
                 continue;
-            },
+            }
         };
         let msg = match std::str::from_utf8(&msg) {
             Ok(x) => x,
             Err(_err) => {
                 warn!("Error while parsing zmq message to utf-8.");
-                continue
-            },
+                continue;
+            }
         };
         let zmq_msg: ZMQMessage = match serde_json::from_str(&msg) {
             Ok(x) => x,
@@ -199,18 +187,18 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<Event>) 
             }
         };
         info!("Received ZeroMQ Message '{}'", &msg);
-        task::block_on(
-            async {
-                sender.send(Event::FromZMQ(zmq_msg)).await
-                    .unwrap_or_else(|_error|  {
-                        warn!("Could not forward zmq message '{}' to server.", &msg);
-                    });
-            });
+        task::block_on(async {
+            sender
+                .send(Event::FromZMQ(zmq_msg))
+                .await
+                .unwrap_or_else(|_error| {
+                    warn!("Could not forward zmq message '{}' to server.", &msg);
+                });
+        });
     }
 }
 
 impl WebSocketServer {
-
     /// Initialize a new WebSocketServer
     pub fn new(websocket_addr: &str, zmq_addr: &str) -> WebSocketServer {
         WebSocketServer {
@@ -223,12 +211,14 @@ impl WebSocketServer {
 
     /// Run the server by listening to incoming websocket connections and zeromq messages
     pub async fn run_async(&mut self) -> Result<(), Error> {
-
         let (server_sender, mut server_receiver) = mpsc::unbounded();
 
         info!("Listening for websockets on: {}", self.websocket_addr);
         let addr = self.websocket_addr.to_string();
-        task::spawn(receive_websocket_connections(addr, mpsc::UnboundedSender::clone(&server_sender)));
+        task::spawn(receive_websocket_connections(
+            addr,
+            mpsc::UnboundedSender::clone(&server_sender),
+        ));
 
         info!("Listening for zeromq on: {}", self.zmq_addr);
         let addr = self.zmq_addr.to_string();
@@ -250,7 +240,7 @@ impl WebSocketServer {
     }
 
     /// Store the websocket sink for a given client id
-    async fn register_websocket (
+    async fn register_websocket(
         &mut self,
         client_id: ClientID,
         sender: SplitSink<WebSocketStream<TcpStream>, Message>,
@@ -262,22 +252,27 @@ impl WebSocketServer {
     async fn unregister_websocket(&mut self, client_id: ClientID) {
         debug!("Unegistering websocket with id '{}'", client_id);
         self.senders.remove(&client_id);
-        for (_, channel) in self.channels.iter_mut() {
-            debug!("Removing client '{}' from channel '{}'", client_id, channel.name);
-            channel.clients.remove(&client_id);
+        for (channel_name, channel) in self.channels.iter_mut() {
+            debug!(
+                "Removing client '{}' from channel '{}'",
+                client_id, channel_name
+            );
+            channel.remove(&client_id);
         }
     }
 
     /// Dispatch an in coming websocket message by calling the correct method
     /// For now only subscribe is available as action
     async fn dispatch(&mut self, message: WSMessage) {
-
         let msg: ActionMessage = match serde_json::from_str(&message.message) {
             Ok(msg) => msg,
             Err(_err) => {
-                warn!("Error parsing websocket message '{}' to json.", message.message);
+                warn!(
+                    "Error parsing websocket message '{}' to json.",
+                    message.message
+                );
                 return;
-            },
+            }
         };
 
         debug!("Dispatching message from WebSocket: {:?}", msg);
@@ -293,27 +288,25 @@ impl WebSocketServer {
         debug!("Subscribing '{}' to channel '{}'", client_id, channel);
         self.channels
             .entry(channel.to_string())
-            .or_insert(Channel {
-                name: channel.to_string(),
-                clients: HashSet::new(),
-            })
-            .add(client_id);
+            .or_insert_with(HashSet::new)
+            .insert(client_id);
         debug!("Channels: {:?}", self.channels);
     }
 
     /// Send a websocket message to all clients of a channel
     async fn send_channel(&mut self, channel: &str, message: &str) {
-
         // parse to json
         let message = json!(message);
 
         if let Some(ch) = self.channels.get(channel) {
             debug!("Sending message to channel '{}': {}", channel, message);
-            for client_id in ch.clients.iter() {
+            for client_id in ch.iter() {
                 if let Some(websocket) = self.senders.get_mut(&client_id) {
                     debug!("Sending channel message to client {}", client_id);
-                    websocket.send(Message::Text(message.to_string())).await
-                        .unwrap_or_else(|_error|  {
+                    websocket
+                        .send(Message::Text(message.to_string()))
+                        .await
+                        .unwrap_or_else(|_error| {
                             warn!("Could send message '{}' to websocket.", message);
                         });
                 }
