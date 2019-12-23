@@ -186,7 +186,7 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<Event>) 
                 continue;
             }
         };
-        info!("Received ZeroMQ Message '{}'", &msg);
+        info!("Received ZMQ Message '{}'", &msg);
         task::block_on(async {
             sender
                 .send(Event::FromZMQ(zmq_msg))
@@ -209,7 +209,7 @@ impl WebSocketServer {
         }
     }
 
-    /// Run the server by listening to incoming websocket connections and zeromq messages
+    /// Run the server by listening to incoming websocket connections and ZMQ messages
     pub async fn run_async(&mut self) -> Result<(), Error> {
         let (server_sender, mut server_receiver) = mpsc::unbounded();
 
@@ -220,7 +220,7 @@ impl WebSocketServer {
             mpsc::UnboundedSender::clone(&server_sender),
         ));
 
-        info!("Listening for zeromq on: {}", self.zmq_addr);
+        info!("Listening for ZMQ on: {}", self.zmq_addr);
         let addr = self.zmq_addr.to_string();
         thread::spawn(move || {
             receive_zmq_messages(addr, mpsc::UnboundedSender::clone(&server_sender))
