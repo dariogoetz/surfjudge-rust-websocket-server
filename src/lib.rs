@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    io::Error,
+    // io::Error,
     thread,
     fmt,
 };
@@ -27,7 +27,7 @@ use tungstenite::protocol::Message as WSMessage;
 use async_tungstenite::WebSocketStream;
 
 use zmq;
-
+use tokio_zmq::{prelude::*, Socket, Pub, Sub, Error};
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Debug, Hash, Copy)]
 struct ClientID(usize);
@@ -127,10 +127,19 @@ async fn receive_websocket_messages(mut websocket: WebSocketListener) {
 }
 
 async fn receive_websocket_connections(
-    listener: TcpListener,
-    mut server_sender: mpsc::UnboundedSender<ServerMessage>,
+    addr: String,
+    mut sender: mpsc::UnboundedSender<ServerMessage>,
 ) {
     let mut idx = 0;
+    let addr = addr
+        .to_socket_addrs()
+        .await
+        .expect("Not a valid address")
+        .next()
+        .expect("Not a socket address");
+
+    let try_socket = TcpListener::bind(&addr).await;
+    let listener = try_socket.expect("Failed to bind");
 
     while let Ok((stream, _)) = listener.accept().await {
         let addr = stream
@@ -144,7 +153,7 @@ async fn receive_websocket_connections(
         let (sink, stream) = ws_stream.split();
         let client_id = ClientID(idx);
 
-        server_sender.send(ServerMessage::NewConnection(NewConnectionMessage {
+        sender.send(ServerMessage::NewConnection(NewConnectionMessage {
             id: client_id,
             sender: sink,
         })).await
@@ -157,9 +166,49 @@ async fn receive_websocket_connections(
             id: client_id,
             addr,
             listener: stream,
-            sender: mpsc::UnboundedSender::clone(&server_sender),
+            sender: mpsc::UnboundedSender::clone(&sender),
         }));
         idx += 1;
+    }
+}
+
+fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<ServerMessage>) {
+    let context = zmq::Context::new();
+    let sub = context.socket(zmq::SUB).unwrap();
+    sub.set_subscribe(b"").unwrap();
+    sub.bind(&addr)
+        .expect("Could not connect to publisher.");
+
+    loop {
+        let msg = match sub.recv_msg(0) {
+                    Ok(x) => x,
+                    Err(_err) => {
+                        warn!("Error while reading zmq message.");
+                        continue;
+                    },
+        };
+        let msg = match std::str::from_utf8(&msg) {
+            Ok(x) => x,
+            Err(_err) => {
+                warn!("Error while parsing zmq message to utf-8.");
+                continue
+            },
+        };
+        let zmq_msg: ZMQMessage = match serde_json::from_str(&msg) {
+            Ok(x) => x,
+            Err(_err) => {
+                warn!("Error parsing zmq message to json.");
+                continue;
+            }
+        };
+        info!("Received ZeroMQ Message '{}'", &msg);
+        task::block_on(
+            async {
+                sender.send(ServerMessage::FromZMQ(zmq_msg)).await
+                    .unwrap_or_else(|_error|  {
+                        warn!("Could not forward zmq message '{}' to server.", &msg);
+                    });
+            });
     }
 }
 
@@ -177,64 +226,19 @@ impl WebSocketServer {
 
     /// Run the server by listening to incoming websocket connections and zeromq messages
     pub async fn run_async(&mut self) -> Result<(), Error> {
-        let addr = self
-            .websocket_addr
-            .to_socket_addrs()
-            .await
-            .expect("Not a valid address")
-            .next()
-            .expect("Not a socket address");
 
-        let try_socket = TcpListener::bind(&addr).await;
-        let listener = try_socket.expect("Failed to bind");
+        let (server_sender, mut server_receiver) = mpsc::unbounded();
 
         info!("Listening for websockets on: {}", self.websocket_addr);
-        let (server_sender, mut server_receiver) = mpsc::unbounded();
-        task::spawn(receive_websocket_connections(listener, mpsc::UnboundedSender::clone(&server_sender)));
+        let addr = self.websocket_addr.to_string();
+        task::spawn(receive_websocket_connections(addr, mpsc::UnboundedSender::clone(&server_sender)));
 
         info!("Listening for zeromq on: {}", self.zmq_addr);
-        let context = zmq::Context::new();
-        let sub = context.socket(zmq::SUB).unwrap();
-        sub.set_subscribe(b"").unwrap();
-        sub.bind(&self.zmq_addr)
-            .expect("Could not connect to publisher.");
-
-        let mut zmq_sender = mpsc::UnboundedSender::clone(&server_sender);
-        thread::spawn(move|| {
-            loop {
-                let msg = match sub.recv_msg(0) {
-                    Ok(x) => x,
-                    Err(_err) => {
-                        warn!("Error while reading zmq message.");
-                        continue;
-                    },
-                };
-                let msg = match std::str::from_utf8(&msg) {
-                    Ok(x) => x,
-                    Err(_err) => {
-                        warn!("Error while parsing zmq message to utf-8.");
-                        continue
-                    },
-                };
-                let zmq_msg: ZMQMessage = match serde_json::from_str(&msg) {
-                    Ok(x) => x,
-                    Err(_err) => {
-                        warn!("Error parsing zmq message to json.");
-                        continue;
-                    }
-                };
-                info!("Received ZeroMQ Message '{}'", &msg);
-                task::block_on(
-                async {
-                    zmq_sender.send(ServerMessage::FromZMQ(zmq_msg)).await
-                        .unwrap_or_else(|_error|  {
-                            warn!("Could not forward zmq message '{}' to server.", &msg);
-                        });
-                });
-
-            }
+        let addr = self.zmq_addr.to_string();
+        thread::spawn(move || {
+            receive_zmq_messages(addr, mpsc::UnboundedSender::clone(&server_sender))
         });
-        
+
         // dispatch messages from  WebSockets/ZMQ
         while let Some(msg) = server_receiver.next().await {
             match msg {
@@ -270,7 +274,7 @@ impl WebSocketServer {
     /// Dispatch an in coming websocket message by calling the correct method
     /// For now only subscribe is available as action
     async fn dispatch(&mut self, message: WebSocketMessage) {
-        
+
         let msg: ActionMessage = match serde_json::from_str(&message.message) {
             Ok(msg) => msg,
             Err(_err) => {
@@ -305,7 +309,7 @@ impl WebSocketServer {
 
         // parse to json
         let message = json!(message);
-        
+
         if let Some(ch) = self.channels.get(channel) {
             debug!("Sending message to channel '{}': {}", channel, message);
             for client_id in ch.clients.iter() {
