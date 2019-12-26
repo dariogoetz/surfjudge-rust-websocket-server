@@ -320,7 +320,7 @@ impl WebSocketServer {
     /// Send a websocket message to all clients of a channel
     async fn send_channel(&mut self, channel: &str, message: &str) {
         // parse to json
-        let message = json!(message);
+        let message = json!({"channel": channel, "message": message});
 
         if let Some(ch) = self.channels.get(channel) {
             debug!("Sending message to channel '{}': {}", channel, message);
