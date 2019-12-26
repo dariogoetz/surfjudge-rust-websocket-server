@@ -82,7 +82,23 @@ pub struct WebSocketServer {
 
 async fn receive_websocket_messages(mut websocket: WebSocketListener) {
     while let Some(msg) = websocket.listener.next().await {
-        let msg = msg.expect("Failed to get request.");
+        let msg = match msg {
+            Ok(x) => x,
+            Err(_err) => {
+                warn!("Failed to get request.");
+                websocket
+                    .sender
+                    .send(Event::CloseConnection(WSMessage {
+                        id: websocket.id,
+                        message: "close".to_string(),
+                    }))
+                    .await
+                    .unwrap_or_else(|_error| {
+                        warn!("Could not forward websocket closing message to server after ungraceful close.");
+                    });
+                break;
+            },
+        };
         if msg.is_binary() || msg.is_text() {
             info!(
                 "Received websocket message from {}: {}",
