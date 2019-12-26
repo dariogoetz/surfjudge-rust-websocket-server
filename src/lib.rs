@@ -126,12 +126,20 @@ async fn receive_websocket_connections(addr: String, mut sender: mpsc::Unbounded
     let listener = try_socket.expect("Failed to bind");
 
     while let Ok((stream, _)) = listener.accept().await {
-        let addr = stream
-            .peer_addr()
-            .expect("connected streams should have a peer address");
-        let ws_stream = async_tungstenite::accept_async(stream)
-            .await
-            .expect("Error during the websocket handshake occurred");
+        let addr = match stream.peer_addr() {
+            Ok(x) => x,
+            Err(_err) => {
+                warn!("connected streams should have a peer address");
+                continue;
+            }
+        };
+        let ws_stream = match async_tungstenite::accept_async(stream).await {
+            Ok(x) => x,
+            Err(_err) => {
+                warn!("Error during the websocket handshake occurred");
+                continue;
+            },
+        };
         debug!("New WebSocket connection: {}", addr);
 
         let (sink, stream) = ws_stream.split();
