@@ -89,7 +89,7 @@ async fn receive_websocket_messages(mut websocket: WebSocketListener) {
         let msg = match msg {
             Ok(x) => x,
             Err(_err) => {
-                warn!("Failed to get request.");
+                warn!("Failed to receive websocket message from client {}: closing connection", websocket.id);
                 websocket
                     .sender
                     .send(Event::CloseConnection(WSMessage {
@@ -98,13 +98,13 @@ async fn receive_websocket_messages(mut websocket: WebSocketListener) {
                     }))
                     .await
                     .unwrap_or_else(|_error| {
-                        warn!("Could not forward websocket closing message to server after ungraceful close.");
+                        warn!("Could not forward websocket closing message to server after ungraceful close");
                     });
                 break;
-            },
+            }
         };
         if msg.is_binary() || msg.is_text() {
-            info!(
+            debug!(
                 "Received websocket message from {}: {}",
                 websocket.addr, msg
             );
@@ -116,7 +116,7 @@ async fn receive_websocket_messages(mut websocket: WebSocketListener) {
                 }))
                 .await
                 .unwrap_or_else(|_error| {
-                    warn!("Could not forward websocket message '{}' to server.", msg);
+                    warn!("Could not forward websocket message '{}' to server", msg);
                 });
         } else if msg.is_close() {
             websocket
@@ -127,7 +127,7 @@ async fn receive_websocket_messages(mut websocket: WebSocketListener) {
                 }))
                 .await
                 .unwrap_or_else(|_error| {
-                    warn!("Could not forward websocket closing message to server.");
+                    warn!("Could not forward websocket closing message to server");
                 });
         }
     }
@@ -149,7 +149,7 @@ async fn receive_websocket_connections(addr: String, mut sender: mpsc::Unbounded
         let addr = match stream.peer_addr() {
             Ok(x) => x,
             Err(_err) => {
-                warn!("connected streams should have a peer address");
+                warn!("Connected streams should have a peer address");
                 continue;
             }
         };
@@ -158,7 +158,7 @@ async fn receive_websocket_connections(addr: String, mut sender: mpsc::Unbounded
             Err(_err) => {
                 warn!("Error during the websocket handshake occurred");
                 continue;
-            },
+            }
         };
         debug!("New WebSocket connection: {}", addr);
 
@@ -172,7 +172,7 @@ async fn receive_websocket_connections(addr: String, mut sender: mpsc::Unbounded
             }))
             .await
             .unwrap_or_else(|_error| {
-                warn!("Could not register new websocket connection with server.");
+                warn!("Could not register new websocket connection with server");
             });
 
         // spawn task listeing to sink and dispatch
@@ -190,27 +190,27 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<Event>) 
     let context = zmq::Context::new();
     let sub = context.socket(zmq::SUB).unwrap();
     sub.set_subscribe(b"").unwrap();
-    sub.bind(&addr).expect("Could not connect to publisher.");
+    sub.bind(&addr).expect("Could not connect to zmq publisher");
 
     loop {
         let msg = match sub.recv_msg(0) {
             Ok(x) => x,
             Err(_err) => {
-                warn!("Error while reading zmq message.");
+                warn!("Error while reading zmq message");
                 continue;
             }
         };
         let msg = match std::str::from_utf8(&msg) {
             Ok(x) => x,
             Err(_err) => {
-                warn!("Error while parsing zmq message to utf-8.");
+                warn!("Error while parsing zmq message to utf-8");
                 continue;
             }
         };
         let zmq_msg: ZMQMessage = match serde_json::from_str(&msg) {
             Ok(x) => x,
             Err(_err) => {
-                warn!("Error parsing zmq message to json.");
+                warn!("Error parsing zmq message to json");
                 continue;
             }
         };
@@ -220,7 +220,7 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<Event>) 
                 .send(Event::FromZMQ(zmq_msg))
                 .await
                 .unwrap_or_else(|_error| {
-                    warn!("Could not forward zmq message '{}' to server.", &msg);
+                    warn!("Could not forward zmq message '{}' to server", &msg);
                 });
         });
     }
@@ -233,8 +233,11 @@ async fn handle_signals(signals: Signals, mut sender: mpsc::UnboundedSender<Even
             SIGTERM | SIGINT | SIGQUIT => {
                 // Shutdown the system;
                 info!("Gracefully shutting down websocket server!");
-                sender.send(Event::Quit).await.expect("Error shutting down gracefully.");
-            },
+                sender
+                    .send(Event::Quit)
+                    .await
+                    .expect("Error shutting down gracefully.");
+            }
             _ => unreachable!(),
         }
     }
@@ -257,10 +260,11 @@ impl WebSocketServer {
 
         let signals = Signals::new(&[SIGTERM, SIGINT, SIGQUIT])?;
         let handle = signals.handle();
-        let signals_task = async_std::task::spawn(
-            handle_signals(signals, mpsc::UnboundedSender::clone(&server_sender))
-        );
-        
+        let signals_task = async_std::task::spawn(handle_signals(
+            signals,
+            mpsc::UnboundedSender::clone(&server_sender),
+        ));
+
         info!("Listening for websockets on: {}", self.websocket_addr);
         let addr = self.websocket_addr.to_string();
         task::spawn(receive_websocket_connections(
@@ -351,7 +355,12 @@ impl WebSocketServer {
         let message = json!({"channel": channel, "message": message});
 
         if let Some(ch) = self.channels.get(channel) {
-            debug!("Sending message to channel '{}': {}", channel, message);
+            info!(
+                "Sending message to {} clients in channel '{}': {}",
+                ch.len(),
+                channel,
+                message
+            );
             for client_id in ch.iter() {
                 if let Some(websocket) = self.senders.get_mut(&client_id) {
                     debug!("Sending channel message to client {}", client_id);

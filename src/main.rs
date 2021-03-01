@@ -1,8 +1,7 @@
 use async_std::task;
 use clap::{App, Arg};
-use std::env;
 use dotenv;
-
+use std::env;
 
 use log::*;
 
@@ -55,6 +54,9 @@ fn main() {
     let zmq_addr = format!("tcp://*:{}", zmq_port);
 
     let mut server = WebSocketServer::new(&websocket_addr, &zmq_addr);
-    info!("Starting websocket server at {} connecting to ZMQ at {}", websocket_addr, zmq_addr);
+    info!(
+        "Starting websocket server at {} connecting to ZMQ at {}",
+        websocket_addr, zmq_addr
+    );
     task::block_on(server.run_async()).expect("Error running websocket server.");
 }
