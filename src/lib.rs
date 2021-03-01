@@ -18,6 +18,9 @@ use async_std::{
     task,
 };
 
+use signal_hook::consts::signal::*;
+use signal_hook_async_std::Signals;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -64,6 +67,7 @@ enum Event {
     CloseConnection(WSMessage),
     FromWebSocket(WSMessage),
     FromZMQ(ZMQMessage),
+    Quit,
 }
 
 struct WebSocketListener {
@@ -222,6 +226,20 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<Event>) 
     }
 }
 
+async fn handle_signals(signals: Signals, mut sender: mpsc::UnboundedSender<Event>) {
+    let mut signals = signals.fuse();
+    while let Some(signal) = signals.next().await {
+        match signal {
+            SIGTERM | SIGINT | SIGQUIT => {
+                // Shutdown the system;
+                info!("Gracefully shutting down websocket server!");
+                sender.send(Event::Quit).await.expect("Error shutting down gracefully.");
+            },
+            _ => unreachable!(),
+        }
+    }
+}
+
 impl WebSocketServer {
     /// Initialize a new WebSocketServer
     pub fn new(websocket_addr: &str, zmq_addr: &str) -> WebSocketServer {
@@ -237,6 +255,12 @@ impl WebSocketServer {
     pub async fn run_async(&mut self) -> Result<(), Error> {
         let (server_sender, mut server_receiver) = mpsc::unbounded();
 
+        let signals = Signals::new(&[SIGTERM, SIGINT, SIGQUIT])?;
+        let handle = signals.handle();
+        let signals_task = async_std::task::spawn(
+            handle_signals(signals, mpsc::UnboundedSender::clone(&server_sender))
+        );
+        
         info!("Listening for websockets on: {}", self.websocket_addr);
         let addr = self.websocket_addr.to_string();
         task::spawn(receive_websocket_connections(
@@ -257,8 +281,12 @@ impl WebSocketServer {
                 Event::CloseConnection(msg) => self.unregister_websocket(msg.id).await,
                 Event::FromWebSocket(msg) => self.dispatch(msg).await,
                 Event::FromZMQ(msg) => self.send_channel(&msg.channel, &msg.message).await,
+                Event::Quit => break,
             }
         }
+        // Terminate the signal stream.
+        handle.close();
+        signals_task.await;
 
         Ok(())
     }
