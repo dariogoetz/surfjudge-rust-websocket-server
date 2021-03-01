@@ -30,11 +30,10 @@ RUN groupadd $APP_USER \
     && useradd -g $APP_USER $APP_USER \
     && mkdir -p ${APP}
 
-COPY --from=builder /websockets-async/target/release/websockets-async ${APP}/websockets-async
-
-
 RUN chown -R $APP_USER:$APP_USER ${APP}
 USER $APP_USER
 WORKDIR ${APP}
+
+COPY --from=builder /websockets-async/target/release/websockets-async ${APP}/websockets-async
 
 CMD ["./websockets-async"]
