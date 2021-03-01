@@ -214,7 +214,7 @@ fn receive_zmq_messages(addr: String, mut sender: mpsc::UnboundedSender<Event>) 
                 continue;
             }
         };
-        info!("Received ZMQ Message '{}'", &msg);
+        debug!("Received ZMQ Message '{}'", &msg);
         task::block_on(async {
             sender
                 .send(Event::FromZMQ(zmq_msg))
