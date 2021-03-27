@@ -1,0 +1,15 @@
+version: "3"
+
+services:
+  websocket-rust:
+    build: .
+    image: surfjudge-rust-websocket
+    ports:
+      - 6545:6545
+    environment:
+      RUST_LOG: INFO
+      WEBSOCKETS_HOST: 0.0.0.0
+      WEBSOCKETS_PORT: 6544
+      ZMQ_PORT: 6545
+    networks:
+      - default
