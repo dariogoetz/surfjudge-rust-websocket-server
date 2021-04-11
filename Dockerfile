@@ -1,20 +1,32 @@
-FROM rust:latest as builder
+FROM rust:latest as planner
+WORKDIR app
 
-RUN USER=root cargo new --bin websockets-async
-WORKDIR ./websockets-async
+RUN cargo install cargo-chef
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+
+FROM rust:latest as cacher
+WORKDIR app
+
+RUN apt-get update && apt-get install -y libzmq3-dev
+
+RUN cargo install cargo-chef
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+
+FROM rust:latest as builder
+WORKDIR app
 
 RUN apt-get update \
   && apt-get install -y libzmq3-dev \
   && rm -rf /var/lib/apt/lists/*
 
-COPY ./Cargo.toml   ./Cargo.toml
+COPY . .
+COPY --from=cacher /app/target target
+COPY --from=cacher /usr/local/cargo /usr/local/cargo
 
-RUN cargo build --release
-RUN rm src/*.rs
-
-ADD . ./
-
-RUN rm ./target/release/deps/websockets_async*
 RUN cargo build --release
 
 
@@ -34,6 +46,6 @@ RUN chown -R $APP_USER:$APP_USER ${APP}
 USER $APP_USER
 WORKDIR ${APP}
 
-COPY --from=builder /websockets-async/target/release/websockets-async ${APP}/websockets-async
+COPY --from=builder /app/target/release/websockets-async ${APP}/websockets-async
 
 CMD ["./websockets-async"]
