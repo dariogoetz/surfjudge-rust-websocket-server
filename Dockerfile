@@ -9,7 +9,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM rust:latest as cacher
 WORKDIR app
 
-RUN apt-get update && apt-get install -y libzmq3-dev
+RUN apt-get update \
+  && apt-get install -y libzmq3-dev \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN cargo install cargo-chef
 COPY --from=planner /app/recipe.json recipe.json
